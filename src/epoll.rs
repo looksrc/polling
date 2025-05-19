@@ -21,23 +21,36 @@ use rustix::pipe::{pipe, pipe_with, PipeFlags};
 use crate::{Event, PollMode};
 
 /// Interface to epoll.
+/// 
+/// 封装Linux的epoll。
 #[derive(Debug)]
 pub struct Poller {
     /// File descriptor for the epoll instance.
+    /// 
+    /// epoll实例的句柄。
     epoll_fd: OwnedFd,
 
     /// Notifier used to wake up epoll.
+    /// 
+    /// 通知器，用来解除正在阻塞中的wait()函数。
     notifier: Notifier,
 
     /// File descriptor for the timerfd that produces timeouts.
     ///
     /// Redox does not support timerfd.
+    /// 
+    /// 利用timerfd实现超时功能。不支持Redox。(why)
     #[cfg(not(target_os = "redox"))]
     timer_fd: Option<OwnedFd>,
 }
 
 impl Poller {
     /// Creates a new poller.
+    /// 
+    /// 创建Poller。
+    /// - epoll_fd
+    /// - Notifier：event_fd 或 pipe。将读期望注册到epoll。
+    /// - timer_fd。注册到epoll。
     pub fn new() -> io::Result<Poller> {
         // Create an epoll instance.
         //
@@ -155,6 +168,18 @@ impl Poller {
     }
 
     /// Waits for I/O events with an optional timeout.
+    /// 
+    /// 等待操作系统向epoll投递事件。
+    /// 
+    /// 对于非redox系统，利用timer_fd实现超时：
+    /// 1.将超时时间转为timer_fd的超时时间。
+    /// 2.将timer_fd注册到epoll框架，一旦timer_fd到期，epoll的wait会收到timer_fd事件，wait解除阻塞。
+    /// 
+    /// 对于redox系统，利用epoll_wait自带的超时功能。
+    /// 
+    /// todo: 为什么不全都使用epoll_wait自带的超时？
+    /// 
+    /// 最后：别忘了重置通知器状态，并刷新通知器句柄，因为每次的wait调用都收到通知以后才会被调用。
     #[allow(clippy::needless_update)]
     pub fn wait(&self, events: &mut Events, timeout: Option<Duration>) -> io::Result<()> {
         let span = tracing::trace_span!(
@@ -197,6 +222,9 @@ impl Poller {
         let timer_fd: Option<core::convert::Infallible> = None;
 
         // Timeout for epoll. In case of overflow, use no timeout.
+        //
+        // 如果是redox，不会启用timer_fd，非None的超时时间设置epoll_wait。
+        // 如果非redox，启用timer_fd，并给epoll_wait设置None超时时间。
         let timeout = match (timer_fd, timeout) {
             (_, Some(t)) if t == Duration::from_secs(0) => Some(Timespec::default()),
             (None, Some(t)) => Timespec::try_from(t).ok(),
@@ -273,6 +301,10 @@ impl Drop for Poller {
 const TS_ZERO: Timespec = unsafe { std::mem::transmute([0u8; std::mem::size_of::<Timespec>()]) };
 
 /// Get the EPOLL flags for the interest.
+/// 
+/// 拼装epoll_add方法中的标志位，包含：
+/// - 事件投递模式。
+/// - 预期的事件类型。
 fn epoll_flags(interest: &Event, mode: PollMode) -> epoll::EventFlags {
     let mut flags = match mode {
         PollMode::Oneshot => epoll::EventFlags::ONESHOT,
@@ -290,18 +322,28 @@ fn epoll_flags(interest: &Event, mode: PollMode) -> epoll::EventFlags {
 }
 
 /// Epoll flags for all possible readability events.
+/// 
+/// 所有可导致读就绪的事件。（可以唤醒读取操作)
+/// 
+/// 包括：Epoll::IN | Epoll::HUP | Epoll::ERR | Epoll::PRI。
 fn read_flags() -> epoll::EventFlags {
     use epoll::EventFlags as Epoll;
     Epoll::IN | Epoll::HUP | Epoll::ERR | Epoll::PRI
 }
 
 /// Epoll flags for all possible writability events.
+/// 
+/// 所有可导致写就绪的事件。（可以唤醒写入操作)
+/// 
+/// 包括：Epoll::OUT | Epoll::HUP | Epoll::ERR。
 fn write_flags() -> epoll::EventFlags {
     use epoll::EventFlags as Epoll;
     Epoll::OUT | Epoll::HUP | Epoll::ERR
 }
 
 /// A list of reported I/O events.
+/// 
+/// 已投递事件的原始列表。
 pub struct Events {
     list: Vec<epoll::Event>,
 }
@@ -317,6 +359,11 @@ impl Events {
     }
 
     /// Iterates over I/O events.
+    /// 
+    /// 将已投递的原始事件列表适配为读写就绪事件。
+    /// 因为外部使用者只需要知道读写操作是否可以继续执行。
+    /// 
+    /// 原始事件包含了IO相关的数据事件、失败事件等，这些事件最终都会传递给读写操作。
     pub fn iter(&self) -> impl Iterator<Item = Event> + '_ {
         self.list.iter().map(|ev| {
             let flags = ev.flags;
@@ -341,6 +388,8 @@ impl Events {
 }
 
 /// Extra information about this event.
+/// 
+/// 投递事件对应的额外数据，对于epoll来说是所有标志位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventExtra {
     flags: epoll::EventFlags,
@@ -400,6 +449,14 @@ impl EventExtra {
 /// see [here](gramine). In this case, fall back to using a pipe.
 ///
 /// [gramine]: https://gramine.readthedocs.io/en/stable/manifest-syntax.html#allowing-eventfd
+/// 
+/// 通知器作用：
+/// - todo.. 
+/// 
+/// 针对Linux提供了两种通知器
+/// - EventFd，需要event_fd支持。(一个特殊的文件，可实现类似管道的功能)。
+/// - Pipe，不支持EventFd时(redox)或专门测试管道时(polling_test_epoll_pipe)使用。
+/// - 注意：创建这两种文件句柄时，都禁止子进程继承：EventfdFlags::CLOEXEC。
 #[derive(Debug)]
 enum Notifier {
     /// The primary notifier, using eventfd.
@@ -420,6 +477,8 @@ impl Notifier {
     /// Create a new notifier.
     fn new() -> io::Result<Self> {
         // Skip eventfd for testing if necessary.
+        // 利用系统调用创建event_fd文件
+        // 注意：在测试管道(polling_test_epoll_pipe)或平台为redox时，禁用此方式。
         #[cfg(not(target_os = "redox"))]
         {
             if !cfg!(polling_test_epoll_pipe) {
@@ -440,6 +499,7 @@ impl Notifier {
             }
         }
 
+        // 利用系统调用创建管道
         let (read, write) = pipe_with(PipeFlags::CLOEXEC).or_else(|_| {
             let (read, write) = pipe()?;
             fcntl_setfd(&read, fcntl_getfd(&read)? | FdFlags::CLOEXEC)?;
@@ -455,6 +515,8 @@ impl Notifier {
     }
 
     /// The file descriptor to register in the poller.
+    /// 
+    /// 获取读端的句柄。
     fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
             #[cfg(not(target_os = "redox"))]
@@ -466,6 +528,10 @@ impl Notifier {
     }
 
     /// Notify the poller.
+    /// 
+    /// 通知轮询器：
+    /// - event_fd：向文件中以本地字节序写入u64类型的1。
+    /// - pipe：从写端写入一个全零字节。
     fn notify(&self) {
         match self {
             #[cfg(not(target_os = "redox"))]
@@ -481,6 +547,10 @@ impl Notifier {
     }
 
     /// Clear the notification.
+    /// 
+    /// 清除通知：
+    /// - event_fd：读取一次文件即可清除。
+    /// - pipe：读端读取一次即可清除。
     fn clear(&self) {
         match self {
             #[cfg(not(target_os = "redox"))]

@@ -4,11 +4,13 @@ use std::net::TcpListener;
 use polling::{Event, Events, Poller};
 
 fn main() -> io::Result<()> {
+    // 监听套接字
     let l1 = TcpListener::bind("127.0.0.1:8001")?;
     let l2 = TcpListener::bind("127.0.0.1:8002")?;
     l1.set_nonblocking(true)?;
     l2.set_nonblocking(true)?;
 
+    // 事件轮询器
     let poller = Poller::new()?;
     unsafe {
         poller.add(&l1, Event::readable(1))?;
@@ -19,6 +21,7 @@ fn main() -> io::Result<()> {
     println!(" $ nc 127.0.0.1 8001");
     println!(" $ nc 127.0.0.1 8002");
 
+    // 循环处理已发生事件
     let mut events = Events::new();
     loop {
         events.clear();

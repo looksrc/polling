@@ -128,16 +128,28 @@ const NOTIFY_KEY: usize = usize::MAX;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Event {
     /// Key identifying the file descriptor or socket.
+    /// 
+    /// 资源标识。可能是文件描述符或套接字。
     pub key: usize,
     /// Can it do a read operation without blocking?
+    /// 
+    /// 标记是否读就绪。(投递了可读事件)
     pub readable: bool,
     /// Can it do a write operation without blocking?
+    /// 
+    /// 标记是否写就绪。(投递了可写事件)
     pub writable: bool,
     /// System-specific event data.
+    /// 
+    /// 平台特有的额外数据。(每个平台不一样)
     extra: sys::EventExtra,
 }
 
 /// The mode in which the poller waits for I/O events.
+/// 
+/// 轮询器事件投递选项。(可组合)
+/// 
+/// 注册到轮询器中时，每个Event都对应一个PollMode，如果不指定则取默认PollMode::Oneshot。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum PollMode {
@@ -148,6 +160,10 @@ pub enum PollMode {
     /// by calling `Poller::modify` or `Poller::add`.
     ///
     /// This is the default mode.
+    /// 
+    /// 单发选项
+    /// - 每次注册一次，就只限收取一次事件投递。
+    /// - 想再次收取后续产生的事件，需要刷新注册(modify或add)。
     Oneshot,
 
     /// Poll in level-triggered mode.
@@ -158,6 +174,11 @@ pub enum PollMode {
     /// Not all operating system support this mode. Trying to register a file descriptor with
     /// this mode in an unsupported operating system will raise an error. You can check if
     /// the operating system supports this mode by calling `Poller::supports_level`.
+    /// 
+    /// 触发模式：水平触发
+    /// - 依据当前资源状态是否符合预期状态触发事件：只要是期望状态，就会触发事件并投递。
+    /// - 例子：轮询时只要读缓冲区有数据，就会投递读就绪事件。(无论有没有向历史轮询投递过)
+    /// - 并非所有平台都支持此模式。可通过`Poller::supports_level`查看是否支持。
     Level,
 
     /// Poll in edge-triggered mode.
@@ -168,6 +189,11 @@ pub enum PollMode {
     /// Not all operating system support this mode. Trying to register a file descriptor with
     /// this mode in an unsupported operating system will raise an error. You can check if
     /// the operating system supports this mode by calling `Poller::supports_edge`.
+    /// 
+    /// 触发模式：边缘触发
+    /// - 依据当前资源的状态是否发生过转换且转为了预期状态来触发事件。
+    /// - 例子：读缓冲区由空变为不空时。
+    /// - 换句话说，对单个注册资源，每当有状态切换且切换到了预期状态都会触发事件。
     Edge,
 
     /// Poll in both edge-triggered and oneshot mode.
@@ -178,6 +204,10 @@ pub enum PollMode {
     /// Not all operating system support this mode. Trying to register a file descriptor with
     /// this mode in an unsupported operating system will raise an error. You can check if
     /// the operating system supports this mode by calling `Poller::supports_edge`.
+    /// 
+    /// 组合选项：边缘触发且单发
+    /// - 一次注册只能收取一次事件。(为边缘触发加了这个限制，等于是每次都要重新注册的边缘触发)
+    /// - 事件触发模式为边缘触发。
     EdgeOneshot,
 }
 
@@ -195,6 +225,8 @@ impl Event {
     /// All kinds of events (readable and writable).
     ///
     /// Equivalent to: `Event::new(key, true, true)`
+    /// 
+    /// 期望所有事件
     #[inline]
     pub const fn all(key: usize) -> Event {
         Event::new(key, true, true)
@@ -203,6 +235,8 @@ impl Event {
     /// Only the readable event.
     ///
     /// Equivalent to: `Event::new(key, true, false)`
+    /// 
+    /// 期望读就绪事件。
     #[inline]
     pub const fn readable(key: usize) -> Event {
         Event::new(key, true, false)
@@ -211,6 +245,8 @@ impl Event {
     /// Only the writable event.
     ///
     /// Equivalent to: `Event::new(key, false, true)`
+    /// 
+    /// 期望写就绪事件。
     #[inline]
     pub const fn writable(key: usize) -> Event {
         Event::new(key, false, true)
@@ -219,6 +255,8 @@ impl Event {
     /// No events.
     ///
     /// Equivalent to: `Event::new(key, false, false)`
+    /// 
+    /// 无期望的事件。
     #[inline]
     pub const fn none(key: usize) -> Event {
         Event::new(key, false, false)
@@ -237,6 +275,10 @@ impl Event {
     /// - Event Ports
     ///
     /// On other platforms, this function is a no-op.
+    /// 
+    /// 期望中断事件，是非通用的事件放在平台特定的数据中。
+    /// - 通常用于是指文件或套接字被"关闭"时所触发的事件。对应EPOLLHUP和POLLHUP。
+    /// - 支持此属性的框架：epoll, poll, IOCP, Event Ports
     #[inline]
     pub fn set_interrupt(&mut self, active: bool) {
         self.extra.set_hup(active);
@@ -255,6 +297,8 @@ impl Event {
     /// - Event Ports
     ///
     /// On other platforms, this function is a no-op.
+    /// 
+    /// 创建一个期望中断事件的实例。
     #[inline]
     pub fn with_interrupt(mut self) -> Self {
         self.set_interrupt(true);
@@ -274,6 +318,10 @@ impl Event {
     /// - Event Ports
     ///
     /// On other platforms, this function is a no-op.
+    /// 
+    /// 期望优先级事件
+    /// - 用于指示有紧急数据到达，已读就绪。对应EPOLLPRI和POLLPRI。
+    /// - 支持此属性的框架：epoll, poll, IOCP, Event Ports。
     #[inline]
     pub fn set_priority(&mut self, active: bool) {
         self.extra.set_pri(active);
@@ -292,6 +340,8 @@ impl Event {
     /// - Event Ports
     ///
     /// On other platforms, this function is a no-op.
+    /// 
+    /// 创建一个期望优先级事件的实例。
     #[inline]
     pub fn with_priority(mut self) -> Self {
         self.set_priority(true);
@@ -311,6 +361,8 @@ impl Event {
     /// - Event Ports
     ///
     /// On other platforms, this always returns `false`.
+    /// 
+    /// 判定平台是否支持中断事件。
     #[inline]
     pub fn is_interrupt(&self) -> bool {
         self.extra.is_hup()
@@ -329,6 +381,8 @@ impl Event {
     /// - Event Ports
     ///
     /// On other platforms, this always returns `false`.
+    /// 
+    /// 判定平台是否支持优先级事件。
     #[inline]
     pub fn is_priority(&self) -> bool {
         self.extra.is_pri()
@@ -409,12 +463,16 @@ impl Event {
     ///
     /// Returns `Some(true)` if the connection has failed, `Some(false)` if there is no error,
     /// or `None` if the platform does not support detecting this condition.
+    /// 
+    /// 判定投递的事件是否为连接失败。
     #[inline]
     pub fn is_err(&self) -> Option<bool> {
         self.extra.is_err()
     }
 
     /// Remove any extra information from this event.
+    /// 
+    /// 清空平台特有数据。
     #[inline]
     pub fn clear_extra(&mut self) {
         self.extra = sys::EventExtra::empty();
@@ -423,6 +481,8 @@ impl Event {
     /// Get a version of this event with no extra information.
     ///
     /// This is useful for comparing events with `==`.
+    /// 
+    /// 创建无平台特定数据的事件。
     #[inline]
     pub fn with_no_extra(mut self) -> Self {
         self.clear_extra();
@@ -431,6 +491,8 @@ impl Event {
 }
 
 /// Waits for I/O events.
+/// 
+/// 对外暴露的轮询器。代码是跨平台的，编译时根据目标平台会自动切换底层的IO框架。
 pub struct Poller {
     poller: sys::Poller,
     lock: Mutex<()>,
@@ -457,11 +519,15 @@ impl Poller {
     }
 
     /// Tell whether or not this `Poller` supports level-triggered polling.
+    /// 
+    /// 查看是否支持水平触发。
     pub fn supports_level(&self) -> bool {
         self.poller.supports_level()
     }
 
     /// Tell whether or not this `Poller` supports edge-triggered polling.
+    /// 
+    /// 查看是否支持边缘触发。
     pub fn supports_edge(&self) -> bool {
         self.poller.supports_edge()
     }
@@ -471,6 +537,9 @@ impl Poller {
     /// A file descriptor or socket is considered readable or writable when a read or write
     /// operation on it would not block. This doesn't mean the read or write operation will
     /// succeed, it only means the operation will return immediately.
+    /// 
+    /// 如果读或写操作变得可以无阻塞的情况下执行完成，则可认为此资源是可读的或可惜的。
+    /// 但是，即使是可读的或可写的，不能保证读或写操作的结果一定是成功的。
     ///
     /// If interest is set in both readability and writability, the two kinds of events might be
     /// delivered either separately or together.
@@ -479,16 +548,23 @@ impl Poller {
     /// a single [`Event`] of the same form, or in two separate [`Event`]s:
     /// - `Event { key: 7, readable: true, writable: false }`
     /// - `Event { key: 7, readable: false, writable: true }`
+    /// 
+    /// 在通过注册单个Event同时关注可读性和可写性时，返回的Event可能是一个整合的Event也可能是两个独立的Event。
     ///
     /// Note that interest in I/O events needs to be re-enabled using
     /// [`modify()`][`Poller::modify()`] again after an event is delivered if we're interested in
     /// the next event of the same kind.
+    /// 
+    /// 如果已经投递了一个事件，如果还想等待相同的事件则需要更新注册的预期事件。
     ///
     /// It is possible to register interest in the same file descriptor or socket using multiple
     /// separate [`Poller`] instances. When the event is delivered, one or more [`Poller`]s are
     /// notified with that event. The exact number of [`Poller`]s notified depends on the
     /// underlying platform. When registering multiple sources into one event, the user should
     /// be careful to accommodate for events lost to other pollers.
+    /// 
+    /// 如果同一个预期事件注册到多个轮询器，则多个轮询器都可能被投递事件，取决于底层平台。
+    /// 如果通过单个Event注册了多个源，用户需要注意其它轮询器可能不会被投递。
     ///
     /// One may also register one source into other, non-`polling` event loops, like GLib's
     /// context. While the plumbing will vary from platform to platform, in general the [`Poller`]
@@ -498,6 +574,10 @@ impl Poller {
     /// # Safety
     ///
     /// The source must be [`delete()`]d from this `Poller` before it is dropped.
+    /// 
+    /// # 安全性
+    /// 
+    /// 遗弃资源对象之前**必须**调用delete()从IO框架中删除资源。
     ///
     /// [`delete()`]: Poller::delete
     ///
@@ -507,6 +587,11 @@ impl Poller {
     ///
     /// * If `key` equals `usize::MAX` because that key is reserved for internal use.
     /// * If an error is returned by the syscall.
+    /// 
+    /// # 错误说明
+    /// 
+    /// - 错误1：如果预期事件设置的KEY(token)等于2^64会导致错误，此值预留为内部使用。
+    /// - 错误2：系统调用也可能返返回错误。
     ///
     /// # Examples
     ///
@@ -700,9 +785,13 @@ impl Poller {
     ///
     /// Only one thread can wait on I/O. If another thread is already in [`wait()`], concurrent
     /// calls to this method will return immediately with no new events.
+    /// 
+    /// 同一时刻只能一个线程执行wait操作，其它线程如果同时wait会立即返回且无法取到投递事件。
     ///
     /// If the operating system is ready to deliver a large number of events at once, this method
     /// may decide to deliver them in smaller batches.
+    /// 
+    /// 如果操作系统一次投递了大量事件，则此方法会自行决定分组投递。
     ///
     /// [`notify()`]: `Poller::notify()`
     /// [`wait()`]: `Poller::wait()`
@@ -733,16 +822,20 @@ impl Poller {
         let _enter = span.enter();
 
         if let Ok(_lock) = self.lock.try_lock() {
+            // 计算本次操作的最终截止时间
             let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
 
             loop {
                 // Figure out how long to wait for.
+                // 根据最终截止时间，计算出本轮循环中wait的等待时间。
                 let timeout =
                     deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
 
                 // Wait for I/O events.
                 if let Err(e) = self.poller.wait(&mut events.events, timeout) {
                     // If the wait was interrupted by a signal, clear events and try again.
+                    // 如果等待时被中断，则清空投递数组，重新等待。
+                    // 如果等到时报错了，则返回错误。
                     if e.kind() == io::ErrorKind::Interrupted {
                         events.clear();
                         continue;
@@ -752,6 +845,8 @@ impl Poller {
                 }
 
                 // Clear the notification, if any.
+                // 当轮询器收到通知时(self.notified=true)，才会执行wait操作。
+                // 如果成功执行完本次wait，则需将轮询器恢复为未通知状态，标明历史投递的事件已被取走。
                 self.notified.swap(false, Ordering::SeqCst);
 
                 // Indicate number of events.
@@ -767,6 +862,22 @@ impl Poller {
     ///
     /// If no thread is calling [`wait()`] right now, this method will cause the following call
     /// to wake up immediately.
+    /// 
+    /// 唤醒轮询器：
+    /// - 如果存在正在阻塞的wait，则wait会解除阻塞。
+    /// - 如果不存在正在阻塞的wait，则下一次调用wait时不会阻塞。
+    /// 
+    /// 
+    /// 原理(epoll)：
+    /// - 利用：wait方法一旦取到投递事件就会解除阻塞的性质，向轮询器中注册了一个特殊的文件(event_fd或pipe_read_fd)。
+    /// - 当想让wait方法解除阻塞时，就向此文件写入内容使文件变得可读，进而投递读就绪事件，wait取到投递的事件解除了阻塞。
+    /// 
+    /// 步骤：
+    /// - 1.将轮询器标记为已唤醒状态。
+    /// - 2.利用操作系统底层的功能执行唤醒。
+    /// 
+    /// Linux的唤醒原理：(epoll)
+    /// - 
     ///
     /// [`wait()`]: `Poller::wait()`
     ///
@@ -801,6 +912,8 @@ impl Poller {
 }
 
 /// A container for I/O events.
+/// 
+/// 用于在wait中获取所有已投递事件。是IO框架提供的Event的列表。Vec<xx::Event>。
 pub struct Events {
     events: sys::Events,
 
@@ -863,6 +976,8 @@ impl Events {
     ///
     /// This returns all of the events in the container, excluding the notification event.
     ///
+    /// 注意：需要过滤掉值为2^64的预留token。
+    /// 
     /// # Examples
     ///
     /// ```
@@ -883,6 +998,8 @@ impl Events {
     }
 
     /// Delete all of the events in the container.
+    /// 
+    /// 清空容器。
     ///
     /// # Examples
     ///

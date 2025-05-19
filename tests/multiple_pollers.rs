@@ -1,4 +1,9 @@
 //! Test registering one source into multiple pollers.
+//! 
+//! 测试边缘触发、水平触发、单次触发对多轮询器的影响：
+//! 1.水平触发：至少一个轮询器能监测到事件，其它轮询器可能监测到。
+//! 2.单次触发：只有一个轮询器能监测到事件。
+//! 3.边缘触发：所有轮询器都会监测到事件。
 
 use polling::{Event, Events, PollMode, Poller};
 
@@ -17,6 +22,7 @@ fn level_triggered() {
     }
 
     // Register the source into both pollers.
+    // 将单个资源同时注册到两个轮询器中，预期事件：写就绪，触发方式：水平触发。
     let (mut reader, mut writer) = tcp_pair().unwrap();
     unsafe {
         poller1
@@ -28,6 +34,7 @@ fn level_triggered() {
     }
 
     // Neither poller should have any events.
+    // 判定：两个轮询器都未收到投递事件。
     assert_eq!(
         poller1
             .wait(&mut events, Some(Duration::from_secs(1)))
@@ -44,9 +51,15 @@ fn level_triggered() {
     assert!(events.is_empty());
 
     // Write to the source.
+    // 写入。
     writer.write_all(&[1]).unwrap();
 
     // At least one poller should have an event.
+    // 判定：
+    // 1.首个开始监视的轮询器必收到投递事件。
+    // 2.后续其它轮询器可能收到投递事件，也可能收不到。
+    // 原因：
+    // 水平触发时，只要状态满足条件每次等待事件时都会被投递。
     assert_eq!(
         poller1
             .wait(&mut events, Some(Duration::from_secs(1)))
@@ -74,6 +87,7 @@ fn level_triggered() {
     }
 
     // Writing more data should cause the same event.
+    // 再次写入。
     writer.write_all(&[1]).unwrap();
     events.clear();
     assert_eq!(
@@ -103,6 +117,8 @@ fn level_triggered() {
     }
 
     // Read from the source.
+    // 通过读取清空读缓冲区。
+    // 判定：所有轮询器都无法再收到事件投递。
     reader.read_exact(&mut [0; 2]).unwrap();
 
     // Both pollers should not have any events.
